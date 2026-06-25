@@ -1,7 +1,6 @@
 # Emscripten port for the source engine (only portal tested)
 
 ## hosted on [yikes.pw](https://yikes.pw)
-discord: https://discord.gg/2kgxEREY6g
 
 ## list of broken stuff
 + sound
@@ -43,7 +42,8 @@ then download packed game data (yikes.pw/portal/chunks/mapName.data for each map
 
 ## packing game data
 first of all, you'll need to build engine from https://github.com/nillerusr/source-engine for your native arch
-add that printf to ./filesystem/basefilesystem.cpp
+
+and after that toy sould add that printf to ./filesystem/basefilesystem.cpp, to dump all files that engine would access (textures/models that map needs)
 
 ```cpp
 FileHandle_t CBaseFileSystem::OpenForRead( const char *pFileNameT, const char *pOptions, unsigned flags, const char *pathID, char **ppszResolvedFilename )
