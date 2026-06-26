@@ -43,7 +43,7 @@ then download packed game data (yikes.pw/portal/chunks/mapName.data for each map
 ## packing game data
 first of all, you'll need to build engine from https://github.com/nillerusr/source-engine for your native arch
 
-and after that toy sould add that printf to ./filesystem/basefilesystem.cpp, to dump all files that engine would access (textures/models that map needs)
+and after that you should add that printf to ./filesystem/basefilesystem.cpp, to dump all files that engine would access (textures/models that map needs)
 
 ```cpp
 FileHandle_t CBaseFileSystem::OpenForRead( const char *pFileNameT, const char *pOptions, unsigned flags, const char *pathID, char **ppszResolvedFilename )
