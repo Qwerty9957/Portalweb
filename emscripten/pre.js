@@ -26,6 +26,7 @@ if (ENV_IS_WORKER) {
 
 	function syncReadFile(vfsPath) {
 		const p = new TextEncoder().encode(vfsPath.toLowerCase())
+		console.log('WORKER syncReadFile: path=' + vfsPath + ' pathLen=' + p.length)
 		if (p.length > FS_DATA.length) return null
 		FS_DATA.set(p, 0)
 		FS_META[0] = 0
@@ -38,6 +39,9 @@ if (ENV_IS_WORKER) {
 		postMessage({ cmd: 'callHandler', handler: 'fsRequest', args: [] })
 		Atomics.wait(FS_LOCK, 0, 1)
 
+		const exists = FS_META[3] === 0
+		const resultLen = FS_META[2]
+		console.log('WORKER syncReadFile: exists=' + exists + ' dataLen=' + resultLen)
 		if (FS_META[3] !== 0) return null
 		return FS_DATA.slice(0, FS_META[2])
 	}
@@ -83,14 +87,17 @@ if (ENV_IS_WORKER) {
 
 	Module.preRun = Module.preRun || []
 	Module.preRun.push(function () {
+		console.log('WORKER prerun: waiting for dir index...')
 		while (Atomics.load(FS_META, 4) === 0) {
 			Atomics.wait(FS_META, 4, 0, 100)
 		}
 		const dirDataLen = FS_META[5]
 		const dirStr = new TextDecoder().decode(FS_DATA.slice(0, dirDataLen))
+		console.log('WORKER prerun: got ' + dirDataLen + ' bytes of dirs, creating...')
 		for (const dir of dirStr.split('\n')) {
 			if (dir) try { FS.mkdirTree(dir) } catch (e) {}
 		}
+		console.log('WORKER prerun: dirs created, installing FS overrides')
 
 		const _origOpen = FS.open
 		FS.open = function (path, rawFlags) {
@@ -105,9 +112,12 @@ if (ENV_IS_WORKER) {
 				if (flags & 64) throw e
 
 				const resolved = PATH.resolve(FS.cwd(), path)
+				console.log('WORKER FS.open ENOENT: path=' + path + ' resolved=' + resolved)
 				if (lazyLoadFile(resolved)) {
+					console.log('WORKER FS.open: lazy-loaded ' + resolved)
 					return _origOpen(path, flags)
 				}
+				console.log('WORKER FS.open: lazy-load FAILED for ' + resolved)
 				throw e
 			}
 		}
@@ -119,9 +129,12 @@ if (ENV_IS_WORKER) {
 			} catch (e) {
 				if (!isENOENT(e)) throw e
 				const resolved = PATH.resolve(FS.cwd(), path)
+				console.log('WORKER FS.stat ENOENT: path=' + path + ' resolved=' + resolved)
 				if (lazyLoadFile(resolved)) {
+					console.log('WORKER FS.stat: lazy-loaded ' + resolved)
 					return _origStat(path, dontFollow)
 				}
+				console.log('WORKER FS.stat: lazy-load FAILED for ' + resolved)
 				throw e
 			}
 		}
@@ -133,9 +146,12 @@ if (ENV_IS_WORKER) {
 			} catch (e) {
 				if (!isENOENT(e)) throw e
 				const resolved = PATH.resolve(FS.cwd(), path)
+				console.log('WORKER FS.lookupPath ENOENT: path=' + path + ' resolved=' + resolved)
 				if (lazyLoadFile(resolved)) {
+					console.log('WORKER FS.lookupPath: lazy-loaded ' + resolved)
 					return _origLookupPath(path, opts)
 				}
+				console.log('WORKER FS.lookupPath: lazy-load FAILED for ' + resolved)
 				throw e
 			}
 		}
@@ -195,14 +211,17 @@ if (ENV_IS_WORKER) {
 		const type = _meta[0]
 		const pathLen = _meta[1]
 		const path = new TextDecoder().decode(new Uint8Array(_data.buffer, 0, pathLen))
+		console.log('MAIN fsRequest: type=' + type + ' path=' + path + ' pathLen=' + pathLen)
 
 		if (type === 0) {
 			const data = await Module._readFileFromFolder(path)
 			if (data) {
+				console.log('MAIN fsRequest: readFile OK len=' + data.length)
 				_data.set(data, 0)
 				_meta[2] = data.length
 				_meta[3] = 0
 			} else {
+				console.log('MAIN fsRequest: readFile NOT FOUND')
 				_meta[2] = 0
 				_meta[3] = 1
 			}
@@ -213,7 +232,9 @@ if (ENV_IS_WORKER) {
 			_meta[2] = 0
 			_meta[3] = 0
 		} else if (type === 2) {
-			_meta[3] = Module._pathExistsInFolder(path) ? 0 : 1
+			const exists = Module._pathExistsInFolder(path)
+			console.log('MAIN fsRequest: existsCheck path=' + path + ' result=' + exists)
+			_meta[3] = exists ? 0 : 1
 		}
 
 		Atomics.store(_lock, 0, 0)
@@ -221,15 +242,24 @@ if (ENV_IS_WORKER) {
 	}
 
 	Module._pathExistsInFolder = function (path) {
-		return Module._dirIndex && Module._dirIndex.has(path.replace(/^\/+/, '').toLowerCase())
+		const clean = path.replace(/^\/+/, '').toLowerCase()
+		const exists = Module._dirIndex && Module._dirIndex.has(clean)
+		console.log('MAIN _pathExistsInFolder: raw=' + path + ' clean=' + clean + ' exists=' + exists)
+		return exists
 	}
 
 	Module._readFileFromFolder = async function (path) {
 		const clean = path.replace(/^\/+/, '').toLowerCase()
 		const handle = Module._dirIndex && Module._dirIndex.get(clean)
-		if (!handle) return null
+		if (!handle) {
+			console.log('MAIN _readFileFromFolder: NOT FOUND clean=' + clean + ' dirIndex.size=' + (Module._dirIndex ? Module._dirIndex.size : 'null'))
+			return null
+		}
+		console.log('MAIN _readFileFromFolder: FOUND clean=' + clean)
 		const file = await handle.getFile()
-		return new Uint8Array(await file.arrayBuffer())
+		const data = new Uint8Array(await file.arrayBuffer())
+		console.log('MAIN _readFileFromFolder: read ' + data.length + ' bytes')
+		return data
 	}
 
 	Module._writeFileToFolder = async function (path, data) {
@@ -250,10 +280,12 @@ if (ENV_IS_WORKER) {
 
 	Module._sendFolderIndexToWorker = function () {
 		if (!_meta || !_data) {
+			console.log('MAIN _sendFolderIndexToWorker: retrying (meta/data not ready)')
 			setTimeout(Module._sendFolderIndexToWorker, 50)
 			return
 		}
 		const allPaths = Array.from(Module._dirIndex.keys()).sort()
+		console.log('MAIN _sendFolderIndexToWorker: ' + allPaths.length + ' paths, first few: ' + allPaths.slice(0, 5).join(', '))
 		const dirSet = new Set()
 		for (const fp of allPaths) {
 			const parts = fp.split('/')
@@ -274,6 +306,7 @@ if (ENV_IS_WORKER) {
 		_data.set(encoded, 0)
 		_meta[4] = 1
 		_meta[5] = encoded.length
+		console.log('MAIN _sendFolderIndexToWorker: sent ' + dirs.length + ' dirs, ' + encoded.length + ' bytes')
 		Atomics.notify(_meta, 4)
 	}
 }
