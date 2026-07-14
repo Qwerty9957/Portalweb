@@ -112,6 +112,34 @@ if (ENV_IS_WORKER) {
 			}
 		}
 
+		const _origStat = FS.stat
+		FS.stat = function (path, dontFollow) {
+			try {
+				return _origStat(path, dontFollow)
+			} catch (e) {
+				if (!isENOENT(e)) throw e
+				const resolved = PATH.resolve(FS.cwd(), path)
+				if (lazyLoadFile(resolved)) {
+					return _origStat(path, dontFollow)
+				}
+				throw e
+			}
+		}
+
+		const _origLookupPath = FS.lookupPath
+		FS.lookupPath = function (path, opts) {
+			try {
+				return _origLookupPath(path, opts)
+			} catch (e) {
+				if (!isENOENT(e)) throw e
+				const resolved = PATH.resolve(FS.cwd(), path)
+				if (lazyLoadFile(resolved)) {
+					return _origLookupPath(path, opts)
+				}
+				throw e
+			}
+		}
+
 		const _origWrite = FS.write
 		FS.write = function (stream, buffer, offset, length, position) {
 			stream._dirty = true
