@@ -9,33 +9,89 @@
 		body {
 			background: #111;
 			color: #fff;
+			font-family: monospace;
 		}
 
 		body #emscripten_logo {
 			width: 200px;
 		}
+
+		#folder-picker {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			padding: 40px;
+			text-align: center;
+		}
+
+		#folder-picker h2 {
+			margin-bottom: 8px;
+		}
+
+		#folder-picker p {
+			color: #aaa;
+			margin-bottom: 20px;
+			max-width: 500px;
+		}
+
+		#select-folder-btn {
+			padding: 14px 36px;
+			font-size: 18px;
+			background: #ff6600;
+			color: #000;
+			border: none;
+			border-radius: 6px;
+			cursor: pointer;
+			font-weight: bold;
+		}
+
+		#select-folder-btn:hover {
+			background: #ff8833;
+		}
+
+		#selected-path {
+			margin-top: 12px;
+			color: #888;
+			font-size: 13px;
+		}
+
+		#game-area {
+			display: none;
+		}
 	</style>
   </head>
   <body>
-    <a href="http://emscripten.org"><img id="emscripten_logo" src="assets/portal.svg"></a>
+    <div id="folder-picker">
+      <img src="assets/portal.svg" style="width:200px;margin-bottom:20px">
+      <h2>Portal: Web Port</h2>
+      <p>Select your Portal game installation folder to play offline.
+         The game will read and write files directly from your local folder.</p>
+      <button id="select-folder-btn">Select Portal Folder</button>
+      <div id="selected-path"></div>
+    </div>
 
-    <div class="spinner" id='spinner'></div>
-    <div class="emscripten" id="status">Downloading...</div>
+    <div id="game-area">
+      <a href="http://emscripten.org"><img id="emscripten_logo" src="assets/portal.svg"></a>
 
-    <span id='controls'>
-      <span><input type="button" value="Fullscreen" onclick="Module.requestFullscreen(document.getElementById('pointerLock').checked, 
-                                                                                document.getElementById('resize').checked)">
+      <div class="spinner" id='spinner'></div>
+      <div class="emscripten" id="status"></div>
+
+      <span id='controls'>
+        <span><input type="button" value="Fullscreen" onclick="Module.requestFullscreen(document.getElementById('pointerLock').checked, 
+                                                                                    document.getElementById('resize').checked)">
+        </span>
       </span>
-    </span>
 
-    <div class="emscripten">
-      <progress value="0" max="100" id="progress" hidden=1></progress>
-    </div>
+      <div class="emscripten">
+        <progress value="0" max="100" id="progress" hidden=1></progress>
+      </div>
 
-    <div class="emscripten_border">
-      <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex=-1></canvas>
+      <div class="emscripten_border">
+        <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex=-1></canvas>
+      </div>
+      <textarea id="output" rows="8"></textarea>
     </div>
-    <textarea id="output" rows="8"></textarea>
 
     <script type='text/javascript'>
       var statusElement = document.getElementById('status');
@@ -43,31 +99,80 @@
       var spinnerElement = document.getElementById('spinner');
       var canvasElement = document.getElementById('canvas');
       var outputElement = document.getElementById('output');
-      if (outputElement) outputElement.value = ''; // clear browser cache
+      var folderPicker = document.getElementById('folder-picker');
+      var gameArea = document.getElementById('game-area');
+      var selectBtn = document.getElementById('select-folder-btn');
+      var selectedPathEl = document.getElementById('selected-path');
+      if (outputElement) outputElement.value = '';
 
-      // As a default initial behavior, pop up an alert when webgl context is lost. To make your
-      // application robust, you may want to override this behavior before shipping!
-      // See http://www.khronos.org/registry/webgl/specs/latest/1.0/#5.15.2
       canvasElement.addEventListener('webglcontextlost', (e) => {
         alert('WebGL context lost. You will need to reload the page.');
         e.preventDefault();
       }, false);
 
-	  canvasElement.widthNative = screen.availWidth
-	  canvasElement.heightNative = screen.availHeight
+      canvasElement.widthNative = screen.availWidth;
+      canvasElement.heightNative = screen.availHeight;
 
+      // ====== Folder selection ======
+      selectBtn.addEventListener('click', async () => {
+        try {
+          selectBtn.disabled = true;
+          selectBtn.textContent = 'Reading folder...';
+
+          const rootDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+
+          selectedPathEl.textContent = 'Indexing ' + rootDirHandle.name + '...';
+
+          const dirIndex = new Map();
+          async function indexDirectory(handle, prefix) {
+            for await (const entry of handle.values()) {
+              const path = prefix ? prefix + '/' + entry.name : entry.name;
+              if (entry.kind === 'file') {
+                dirIndex.set(path.toLowerCase(), entry);
+              } else if (entry.kind === 'directory') {
+                await indexDirectory(entry, path);
+              }
+            }
+          }
+
+          const start = performance.now();
+          await indexDirectory(rootDirHandle, '');
+          const elapsed = ((performance.now() - start) / 1000).toFixed(1);
+
+          selectedPathEl.textContent = rootDirHandle.name + ' (' + dirIndex.size + ' files indexed in ' + elapsed + 's)';
+
+          // Share folder access with pre.js main-thread code
+          Module._rootHandle = rootDirHandle;
+          Module._dirIndex = dirIndex;
+
+          // Send directory index to the worker thread
+          if (Module._sendFolderIndexToWorker) {
+            Module._sendFolderIndexToWorker();
+          }
+
+          folderPicker.style.display = 'none';
+          gameArea.style.display = '';
+
+          removeRunDependency('load_game_data');
+        } catch (err) {
+          if (err.name === 'SecurityError' || err.name === 'AbortError') {
+            selectedPathEl.textContent = 'Access denied or cancelled. Please try again.';
+          } else {
+            selectedPathEl.textContent = 'Error: ' + err.message;
+          }
+          selectBtn.disabled = false;
+          selectBtn.textContent = 'Select Portal Folder';
+        }
+      });
+
+      // ====== Emscripten Module ======
       var Module = {
         print(...args) {
           console.log(...args);
-          // These replacements are necessary if you render to raw HTML
-          //text = text.replace(/&/g, "&amp;");
-          //text = text.replace(/</g, "&lt;");
-          //text = text.replace(/>/g, "&gt;");
-          //text = text.replace('\n', '<br>', 'g');
           if (outputElement) {
             var text = args.join(' ');
             outputElement.value += text + "\n";
-            outputElement.scrollTop = outputElement.scrollHeight; // focus on bottom
+            outputElement.scrollTop = outputElement.scrollHeight;
           }
         },
         canvas: canvasElement,
@@ -76,7 +181,6 @@
           if (text === Module.setStatus.last.text) return;
           var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
           var now = Date.now();
-          // if this is a progress update, skip it if too soon
           if (m && now - Module.setStatus.last.time < 30) return;
           Module.setStatus.last.time = now;
           Module.setStatus.last.text = text;
@@ -100,9 +204,8 @@
           Module.setStatus(left ? 'Preparing... (' + (this.totalDependencies-left) + '/' + this.totalDependencies + ')' : 'All downloads complete.');
         }
       };
-      Module.setStatus('Downloading...');
+      Module.setStatus('Select your Portal folder to start');
       window.onerror = (event) => {
-        // TODO: do not warn on ok events like simulating an infinite loop or exitStatus
         Module.setStatus('Exception thrown, see JavaScript console');
         spinnerElement.style.display = 'none';
         Module.setStatus = (text) => {

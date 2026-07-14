@@ -30,7 +30,8 @@ ValveETWProviderEvents.h
 game/client/*/client.lib
 game/server/*/server.lib
 .DS_Store
-build*/
+build/*
+!build/install/
 .cache/
 .ccache/
 waf3*/

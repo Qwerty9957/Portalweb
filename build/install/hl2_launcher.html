@@ -1,0 +1,314 @@
+<!DOCTYPE HTML>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>yikes!</title>
+    <style>body {
+  font-family: arial;
+  margin: 0;
+  padding: none;
+}
+
+.emscripten { padding-right: 0; margin-left: auto; margin-right: auto; display: block; }
+div.emscripten { text-align: center; }
+div.emscripten_border { border: 1px solid black; }
+/* the canvas *must not* have any border or padding, or mouse coords will be wrong */
+canvas.emscripten { border: 0px none; background-color: black; }
+
+#emscripten_logo {
+  display: inline-block;
+  margin: 0;
+  padding: 6px;
+  width: 265px;
+}
+
+.spinner {
+  height: 30px;
+  width: 30px;
+  margin: 0;
+  margin-top: 20px;
+  margin-left: 20px;
+  display: inline-block;
+  vertical-align: top;
+
+  -webkit-animation: rotation .8s linear infinite;
+  -moz-animation: rotation .8s linear infinite;
+  -o-animation: rotation .8s linear infinite;
+  animation: rotation 0.8s linear infinite;
+
+  border-left: 5px solid rgb(235, 235, 235);
+  border-right: 5px solid rgb(235, 235, 235);
+  border-bottom: 5px solid rgb(235, 235, 235);
+  border-top: 5px solid rgb(120, 120, 120);
+
+  border-radius: 100%;
+  background-color: rgb(189, 215, 46);
+}
+
+@-webkit-keyframes rotation {
+  from {-webkit-transform: rotate(0deg);}
+  to {-webkit-transform: rotate(360deg);}
+}
+@-moz-keyframes rotation {
+  from {-moz-transform: rotate(0deg);}
+  to {-moz-transform: rotate(360deg);}
+}
+@-o-keyframes rotation {
+  from {-o-transform: rotate(0deg);}
+  to {-o-transform: rotate(360deg);}
+}
+@keyframes rotation {
+  from {transform: rotate(0deg);}
+  to {transform: rotate(360deg);}
+}
+
+#status {
+  display: inline-block;
+  vertical-align: top;
+  margin-top: 30px;
+  margin-left: 20px;
+  font-weight: bold;
+  color: rgb(120, 120, 120);
+}
+
+#progress {
+  height: 20px;
+  width: 300px;
+}
+
+#controls {
+  display: inline-block;
+  float: right;
+  vertical-align: top;
+  margin-top: 30px;
+  margin-right: 20px;
+}
+
+#output {
+  width: 100%;
+  height: 200px;
+  margin: 0 auto;
+  margin-top: 10px;
+  border-left: 0px;
+  border-right: 0px;
+  padding-left: 0px;
+  padding-right: 0px;
+  display: block;
+  background-color: black;
+  color: white;
+  font-family: 'Lucida Console', Monaco, monospace;
+  outline: none;
+}
+</style>
+	<style>
+		body {
+			background: #111;
+			color: #fff;
+			font-family: monospace;
+		}
+
+		body #emscripten_logo {
+			width: 200px;
+		}
+
+		#folder-picker {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			padding: 40px;
+			text-align: center;
+		}
+
+		#folder-picker h2 {
+			margin-bottom: 8px;
+		}
+
+		#folder-picker p {
+			color: #aaa;
+			margin-bottom: 20px;
+			max-width: 500px;
+		}
+
+		#select-folder-btn {
+			padding: 14px 36px;
+			font-size: 18px;
+			background: #ff6600;
+			color: #000;
+			border: none;
+			border-radius: 6px;
+			cursor: pointer;
+			font-weight: bold;
+		}
+
+		#select-folder-btn:hover {
+			background: #ff8833;
+		}
+
+		#selected-path {
+			margin-top: 12px;
+			color: #888;
+			font-size: 13px;
+		}
+
+		#game-area {
+			display: none;
+		}
+	</style>
+  </head>
+  <body>
+    <div id="folder-picker">
+      <img src="assets/portal.svg" style="width:200px;margin-bottom:20px">
+      <h2>Portal: Web Port</h2>
+      <p>Select your Portal game installation folder to play offline.
+         The game will read and write files directly from your local folder.</p>
+      <button id="select-folder-btn">Select Portal Folder</button>
+      <div id="selected-path"></div>
+    </div>
+
+    <div id="game-area">
+      <a href="http://emscripten.org"><img id="emscripten_logo" src="assets/portal.svg"></a>
+
+      <div class="spinner" id='spinner'></div>
+      <div class="emscripten" id="status"></div>
+
+      <span id='controls'>
+        <span><input type="button" value="Fullscreen" onclick="Module.requestFullscreen(document.getElementById('pointerLock').checked, 
+                                                                                    document.getElementById('resize').checked)">
+        </span>
+      </span>
+
+      <div class="emscripten">
+        <progress value="0" max="100" id="progress" hidden=1></progress>
+      </div>
+
+      <div class="emscripten_border">
+        <canvas class="emscripten" id="canvas" oncontextmenu="event.preventDefault()" tabindex=-1></canvas>
+      </div>
+      <textarea id="output" rows="8"></textarea>
+    </div>
+
+    <script type='text/javascript'>
+      var statusElement = document.getElementById('status');
+      var progressElement = document.getElementById('progress');
+      var spinnerElement = document.getElementById('spinner');
+      var canvasElement = document.getElementById('canvas');
+      var outputElement = document.getElementById('output');
+      var folderPicker = document.getElementById('folder-picker');
+      var gameArea = document.getElementById('game-area');
+      var selectBtn = document.getElementById('select-folder-btn');
+      var selectedPathEl = document.getElementById('selected-path');
+      if (outputElement) outputElement.value = '';
+
+      canvasElement.addEventListener('webglcontextlost', (e) => {
+        alert('WebGL context lost. You will need to reload the page.');
+        e.preventDefault();
+      }, false);
+
+      canvasElement.widthNative = screen.availWidth;
+      canvasElement.heightNative = screen.availHeight;
+
+      // ====== Folder selection ======
+      selectBtn.addEventListener('click', async () => {
+        try {
+          selectBtn.disabled = true;
+          selectBtn.textContent = 'Reading folder...';
+
+          const rootDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+
+          selectedPathEl.textContent = 'Indexing ' + rootDirHandle.name + '...';
+
+          const dirIndex = new Map();
+          async function indexDirectory(handle, prefix) {
+            for await (const entry of handle.values()) {
+              const path = prefix ? prefix + '/' + entry.name : entry.name;
+              if (entry.kind === 'file') {
+                dirIndex.set(path.toLowerCase(), entry);
+              } else if (entry.kind === 'directory') {
+                await indexDirectory(entry, path);
+              }
+            }
+          }
+
+          const start = performance.now();
+          await indexDirectory(rootDirHandle, '');
+          const elapsed = ((performance.now() - start) / 1000).toFixed(1);
+
+          selectedPathEl.textContent = rootDirHandle.name + ' (' + dirIndex.size + ' files indexed in ' + elapsed + 's)';
+
+          // Share folder access with pre.js main-thread code
+          Module._rootHandle = rootDirHandle;
+          Module._dirIndex = dirIndex;
+
+          // Send directory index to the worker thread
+          if (Module._sendFolderIndexToWorker) {
+            Module._sendFolderIndexToWorker();
+          }
+
+          folderPicker.style.display = 'none';
+          gameArea.style.display = '';
+
+          removeRunDependency('load_game_data');
+        } catch (err) {
+          if (err.name === 'SecurityError' || err.name === 'AbortError') {
+            selectedPathEl.textContent = 'Access denied or cancelled. Please try again.';
+          } else {
+            selectedPathEl.textContent = 'Error: ' + err.message;
+          }
+          selectBtn.disabled = false;
+          selectBtn.textContent = 'Select Portal Folder';
+        }
+      });
+
+      // ====== Emscripten Module ======
+      var Module = {
+        print(...args) {
+          console.log(...args);
+          if (outputElement) {
+            var text = args.join(' ');
+            outputElement.value += text + "\n";
+            outputElement.scrollTop = outputElement.scrollHeight;
+          }
+        },
+        canvas: canvasElement,
+        setStatus(text) {
+          Module.setStatus.last ??= { time: Date.now(), text: '' };
+          if (text === Module.setStatus.last.text) return;
+          var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+          var now = Date.now();
+          if (m && now - Module.setStatus.last.time < 30) return;
+          Module.setStatus.last.time = now;
+          Module.setStatus.last.text = text;
+          if (m) {
+            text = m[1];
+            progressElement.value = parseInt(m[2])*100;
+            progressElement.max = parseInt(m[4])*100;
+            progressElement.hidden = false;
+            spinnerElement.hidden = false;
+          } else {
+            progressElement.value = null;
+            progressElement.max = null;
+            progressElement.hidden = true;
+            if (!text) spinnerElement.style.display = 'none';
+          }
+          statusElement.innerHTML = text;
+        },
+        totalDependencies: 0,
+        monitorRunDependencies(left) {
+          this.totalDependencies = Math.max(this.totalDependencies, left);
+          Module.setStatus(left ? 'Preparing... (' + (this.totalDependencies-left) + '/' + this.totalDependencies + ')' : 'All downloads complete.');
+        }
+      };
+      Module.setStatus('Select your Portal folder to start');
+      window.onerror = (event) => {
+        Module.setStatus('Exception thrown, see JavaScript console');
+        spinnerElement.style.display = 'none';
+        Module.setStatus = (text) => {
+          if (text) console.error('[post-exception status] ' + text);
+        };
+      };
+    </script>
+    <script async type="text/javascript" src="hl2_launcher.js"></script>
+  </body>
+</html>
