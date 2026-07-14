@@ -137,6 +137,19 @@ if (ENV_IS_WORKER) {
 } else {
 	// ===================== MAIN THREAD =====================
 
+	console.log('MAIN: pre.js loaded');
+
+	const _origAddDep = addRunDependency;
+	const _origRemoveDep = removeRunDependency;
+	addRunDependency = function(id) {
+		console.log('MAIN addRunDependency:', id);
+		_origAddDep(id);
+	};
+	removeRunDependency = function(id) {
+		console.log('MAIN removeRunDependency:', id);
+		_origRemoveDep(id);
+	};
+
 	let _lock = null, _meta = null, _data = null
 
 	Module.registerFSBuffers = function (lockBuf, metaBuf, dataBuf) {
