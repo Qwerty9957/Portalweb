@@ -1,5 +1,4 @@
 
-
 ;(() => {
 	if(typeof window === 'undefined') return;
 
@@ -12,6 +11,4 @@
 	})
 
 	canvasElement.onkeypress = e => e.preventDefault()
-
-	addRunDependency('load_game_data')
 })();

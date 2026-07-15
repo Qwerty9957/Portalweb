@@ -189,15 +189,15 @@ canvas.emscripten { border: 0px none; background-color: black; }
       <textarea id="output" rows="8"></textarea>
     </div>
 
-    <script>
-      if (location.search.includes('debug=true')) {
-        var s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/eruda';
-        s.onload = function () { eruda.init(); };
-        document.head.appendChild(s);
-      }
-    </script>
     <script type='text/javascript'>
+      // Eruda debug console — activate with ?debug=true
+      if (location.search.includes('debug=true')) {
+        var scr = document.createElement('script');
+        scr.src = 'https://cdn.jsdelivr.net/npm/eruda';
+        scr.onload = function () { eruda.init(); };
+        document.head.appendChild(scr);
+      }
+
       var statusElement = document.getElementById('status');
       var progressElement = document.getElementById('progress');
       var spinnerElement = document.getElementById('spinner');
@@ -257,7 +257,14 @@ canvas.emscripten { border: 0px none; background-color: black; }
           folderPicker.style.display = 'none';
           gameArea.style.display = '';
 
-          removeRunDependency('load_game_data');
+          // Start the game (runtime should already be initialized)
+          if (typeof Module.callMain === 'function') {
+            Module.callMain();
+          } else {
+            Module.onRuntimeInitialized = function() {
+              Module.callMain();
+            };
+          }
         } catch (err) {
           if (err.name === 'SecurityError' || err.name === 'AbortError') {
             selectedPathEl.textContent = 'Access denied or cancelled. Please try again.';
@@ -271,6 +278,7 @@ canvas.emscripten { border: 0px none; background-color: black; }
 
       // ====== Emscripten Module ======
       var Module = {
+        noInitialRun: true,
         print(...args) {
           console.log(...args);
           if (outputElement) {

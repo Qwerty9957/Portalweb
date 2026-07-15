@@ -161,7 +161,14 @@
           folderPicker.style.display = 'none';
           gameArea.style.display = '';
 
-          removeRunDependency('load_game_data');
+          // Start the game (runtime should already be initialized)
+          if (typeof Module.callMain === 'function') {
+            Module.callMain();
+          } else {
+            Module.onRuntimeInitialized = function() {
+              Module.callMain();
+            };
+          }
         } catch (err) {
           if (err.name === 'SecurityError' || err.name === 'AbortError') {
             selectedPathEl.textContent = 'Access denied or cancelled. Please try again.';
@@ -175,6 +182,7 @@
 
       // ====== Emscripten Module ======
       var Module = {
+        noInitialRun: true,
         print(...args) {
           console.log(...args);
           if (outputElement) {
