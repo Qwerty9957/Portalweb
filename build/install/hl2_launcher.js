@@ -243,7 +243,6 @@ if (ENV_IS_WORKER) {
 	let _lock = new Int32Array(Module._FS_SAB_LOCK)
 	let _meta = new Int32Array(Module._FS_SAB_META)
 	let _data = new Uint8Array(Module._FS_SAB_DATA)
-	}
 
 	Module.fsRequest = async function () {
 		if (!_lock || Atomics.load(_lock, 0) !== 1) return
