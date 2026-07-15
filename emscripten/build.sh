@@ -27,6 +27,7 @@ emcc \
 	-sUSE_BZIP2=1 -sUSE_SDL=2 -sUSE_FREETYPE=1 -sUSE_LIBJPEG=1 -sUSE_LIBPNG -sMALLOC=mimalloc \
 	-sMAIN_MODULE -sINITIAL_MEMORY=2047mb -sSHARED_MEMORY=1 -sUSE_PTHREADS -sPTHREAD_POOL_SIZE=8 -sPTHREAD_POOL_SIZE_STRICT=2 \
 	-sFULL_ES3 -sSTACK_SIZE=4mb --shell-file=emscripten/shell.html \
+	-sEXPORTED_RUNTIME_METHODS=callMain \
 	-sPROXY_TO_PTHREAD -sOFFSCREENCANVASES_TO_PTHREAD="#canvas" -sOFFSCREENCANVAS_SUPPORT=1 \
 	--pre-js emscripten/pre.js --post-js emscripten/post.js \
 	-L build/install/ \

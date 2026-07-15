@@ -317,6 +317,9 @@ canvas.emscripten { border: 0px none; background-color: black; }
         }
       };
       Module.setStatus('Select your Portal folder to start');
+      Module._FS_SAB_LOCK = new SharedArrayBuffer(4);
+      Module._FS_SAB_META = new SharedArrayBuffer(64);
+      Module._FS_SAB_DATA = new SharedArrayBuffer(64 * 1024 * 1024);
       window.onerror = (event) => {
         Module.setStatus('Exception thrown, see JavaScript console');
         spinnerElement.style.display = 'none';

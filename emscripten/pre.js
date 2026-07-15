@@ -13,16 +13,10 @@ const ENV_IS_WORKER = typeof importScripts !== 'undefined'
 if (ENV_IS_WORKER) {
 	// ===================== WORKER (PTHREAD) =====================
 
-	const FS_LOCK = new Int32Array(new SharedArrayBuffer(4))
-	const FS_META = new Int32Array(new SharedArrayBuffer(64))
-	const FS_DATA = new Uint8Array(new SharedArrayBuffer(64 * 1024 * 1024))
+	const FS_LOCK = new Int32Array(Module._FS_SAB_LOCK)
+	const FS_META = new Int32Array(Module._FS_SAB_META)
+	const FS_DATA = new Uint8Array(Module._FS_SAB_DATA)
 	let _populating = false
-
-	postMessage({
-		cmd: 'callHandler',
-		handler: 'registerFSBuffers',
-		args: [FS_LOCK.buffer, FS_META.buffer, FS_DATA.buffer]
-	})
 
 	function syncReadFile(vfsPath) {
 		const p = new TextEncoder().encode(vfsPath.toLowerCase())
@@ -197,12 +191,9 @@ if (ENV_IS_WORKER) {
 		_origRemoveDep(id);
 	};
 
-	let _lock = null, _meta = null, _data = null
-
-	Module.registerFSBuffers = function (lockBuf, metaBuf, dataBuf) {
-		_lock = new Int32Array(lockBuf)
-		_meta = new Int32Array(metaBuf)
-		_data = new Uint8Array(dataBuf)
+	let _lock = new Int32Array(Module._FS_SAB_LOCK)
+	let _meta = new Int32Array(Module._FS_SAB_META)
+	let _data = new Uint8Array(Module._FS_SAB_DATA)
 	}
 
 	Module.fsRequest = async function () {
