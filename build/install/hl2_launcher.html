@@ -189,6 +189,14 @@ canvas.emscripten { border: 0px none; background-color: black; }
       <textarea id="output" rows="8"></textarea>
     </div>
 
+    <script>
+      if (location.search.includes('debug=true')) {
+        var s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/eruda';
+        s.onload = function () { eruda.init(); };
+        document.head.appendChild(s);
+      }
+    </script>
     <script type='text/javascript'>
       var statusElement = document.getElementById('status');
       var progressElement = document.getElementById('progress');
