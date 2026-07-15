@@ -94,6 +94,14 @@
     </div>
 
     <script type='text/javascript'>
+      // Eruda debug console — activate with ?debug=true
+      if (location.search.includes('debug=true')) {
+        var scr = document.createElement('script');
+        scr.src = 'https://cdn.jsdelivr.net/npm/eruda';
+        scr.onload = function () { eruda.init(); };
+        document.head.appendChild(scr);
+      }
+
       var statusElement = document.getElementById('status');
       var progressElement = document.getElementById('progress');
       var spinnerElement = document.getElementById('spinner');
