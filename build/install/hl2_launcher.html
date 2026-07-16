@@ -189,6 +189,16 @@ canvas.emscripten { border: 0px none; background-color: black; }
       <textarea id="output" rows="8"></textarea>
     </div>
 
+    <div id="error-overlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:#111;color:#f44;font-family:monospace;padding:20px;z-index:9999;overflow:auto;white-space:pre-wrap;font-size:14px">
+      <div style="max-width:800px;margin:0 auto">
+        <h2>Portal Web — Error</h2>
+        <div id="error-text"></div>
+        <button id="copy-error-btn" style="margin-top:16px;padding:10px 20px;background:#ff6600;color:#000;border:none;border-radius:4px;font-weight:bold;cursor:pointer">Copy Console</button>
+        <button onclick="location.reload()" style="margin-left:8px;padding:10px 20px;background:#444;color:#fff;border:none;border-radius:4px;cursor:pointer">Reload</button>
+        <button onclick="document.getElementById('error-overlay').style.display='none'" style="margin-left:8px;padding:10px 20px;background:#444;color:#fff;border:none;border-radius:4px;cursor:pointer">Dismiss</button>
+      </div>
+    </div>
+
     <script type='text/javascript'>
       // Eruda debug console — activate with ?debug=true
       if (location.search.includes('debug=true')) {
@@ -320,6 +330,36 @@ canvas.emscripten { border: 0px none; background-color: black; }
       Module._FS_SAB_LOCK = new SharedArrayBuffer(4);
       Module._FS_SAB_META = new SharedArrayBuffer(64);
       Module._FS_SAB_DATA = new SharedArrayBuffer(64 * 1024 * 1024);
+
+      // Show crash overlay on unhandled error
+      window.addEventListener('error', function(e) {
+        showCrash(e.message || String(e.error));
+      });
+      var _origConsoleError = console.error;
+      var _errors = [];
+      console.error = function() {
+        _errors.push(Array.from(arguments).join(' '));
+        _origConsoleError.apply(console, arguments);
+      };
+      function showCrash(msg) {
+        var overlay = document.getElementById('error-overlay');
+        var text = document.getElementById('error-text');
+        if (!overlay || !text) return;
+        text.textContent = msg + '\n\nFull console:\n' + _errors.join('\n');
+        overlay.style.display = 'block';
+      }
+      document.getElementById('copy-error-btn').addEventListener('click', function() {
+        var text = document.getElementById('error-text');
+        if (!text) return;
+        navigator.clipboard.writeText(text.textContent).catch(function() {
+          var ta = document.createElement('textarea');
+          ta.value = text.textContent;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          ta.remove();
+        });
+      });
       window.onerror = (event) => {
         Module.setStatus('Exception thrown, see JavaScript console');
         spinnerElement.style.display = 'none';

@@ -236,6 +236,25 @@ int main( int argc, char *argv[] )
 	}
 
 #if IsWasm()
+	// Force -game portal for wasm builds
+	{
+		bool hasGame = false;
+		for ( int i = 1; i < argc; i++ ) {
+			if ( strcmp( argv[i], "-game" ) == 0 ) { hasGame = true; break; }
+		}
+		if ( !hasGame ) {
+			const char *newArgv[] = { argv[0], "-game", "portal" };
+			int newArgc = argc + 2;
+			const char **merged = (const char **)malloc( (newArgc + 1) * sizeof(char*) );
+			merged[0] = argv[0];
+			merged[1] = strdup("-game");
+			merged[2] = strdup("portal");
+			for ( int i = 1; i < argc; i++ ) merged[i + 2] = argv[i];
+			merged[newArgc] = NULL;
+			argc = newArgc;
+			argv = (char **)merged;
+		}
+	}
 	void *launcher = dlopen( "liblauncher" DLL_EXT_STRING, RTLD_NOW );
 	if ( !launcher )
 	{
