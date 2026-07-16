@@ -93,6 +93,14 @@ if (ENV_IS_WORKER) {
 		}
 		console.log('WORKER prerun: dirs created, installing FS overrides')
 
+		// Pre-load critical files so the engine finds them immediately
+		var criticalFiles = ['/portal/gameinfo.txt', '/portal/fonts/GameFont.ttf', '/portal/portal.shader']
+
+		var data = syncReadFile(criticalFiles[0])
+		if (data) {
+			FS.writeFile(criticalFiles[0], new Uint8Array(data))
+		}
+
 		const _origOpen = FS.open
 		FS.open = function (path, rawFlags) {
 			if (_populating) return _origOpen(path, rawFlags)

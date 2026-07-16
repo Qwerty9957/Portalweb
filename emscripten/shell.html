@@ -239,17 +239,24 @@
       window.addEventListener('error', function(e) {
         showCrash(e.message || String(e.error));
       });
+      var _consoleLines = [];
+      var _origConsoleLog = console.log;
       var _origConsoleError = console.error;
-      var _errors = [];
+      console.log = function() {
+        var line = Array.from(arguments).join(' ');
+        _consoleLines.push(line);
+        _origConsoleLog.apply(console, arguments);
+      };
       console.error = function() {
-        _errors.push(Array.from(arguments).join(' '));
+        var line = Array.from(arguments).join(' ');
+        _consoleLines.push('[ERR] ' + line);
         _origConsoleError.apply(console, arguments);
       };
       function showCrash(msg) {
         var overlay = document.getElementById('error-overlay');
         var text = document.getElementById('error-text');
         if (!overlay || !text) return;
-        text.textContent = msg + '\n\nFull console:\n' + _errors.join('\n');
+        text.textContent = msg + '\n\n=== Full Console ===\n' + _consoleLines.join('\n');
         overlay.style.display = 'block';
       }
       document.getElementById('copy-error-btn').addEventListener('click', function() {
