@@ -264,6 +264,9 @@ canvas.emscripten { border: 0px none; background-color: black; }
             Module._sendFolderIndexToWorker();
           }
 
+          // Pre-load critical files (gameinfo.txt etc.) into MEMFS before starting the engine
+          await Module._preloadCriticalFiles();
+
           folderPicker.style.display = 'none';
           gameArea.style.display = '';
 

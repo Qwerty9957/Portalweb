@@ -46,7 +46,6 @@ if (ENV_IS_WORKER) {
 	function syncReadFile(vfsPath) {
 		if (!initFSViews()) return null
 		const p = new TextEncoder().encode(vfsPath.toLowerCase())
-		console.log('WORKER syncReadFile: path=' + vfsPath + ' pathLen=' + p.length)
 		if (p.length > FS_DATA.length) return null
 		FS_DATA.set(p, 0)
 		FS_META[0] = 0
@@ -59,9 +58,6 @@ if (ENV_IS_WORKER) {
 		postMessage({ cmd: 'callHandler', handler: 'fsRequest', args: [] })
 		Atomics.wait(FS_LOCK, 0, 1)
 
-		const exists = FS_META[3] === 0
-		const resultLen = FS_META[2]
-		console.log('WORKER syncReadFile: exists=' + exists + ' dataLen=' + resultLen)
 		if (FS_META[3] !== 0) return null
 		return FS_DATA.slice(0, FS_META[2])
 	}
@@ -106,33 +102,27 @@ if (ENV_IS_WORKER) {
 		return Math.abs(e.errno) === 2 || Math.abs(e.errno) === 44
 	}
 
-	Module.preRun = Module.preRun || []
-	Module.preRun.push(function () {
-		if (!initFSViews()) {
-			console.error('WORKER prerun: FAILED to initialize FS bridge views')
-			return
-		}
-		console.log('WORKER prerun: FS bridge views ready' + (Module._FS_SAB_LOCK ? ' (from SABs)' : ' (from heap)'))
-		console.log('WORKER prerun: waiting for dir index...')
+	function installWorkerFSOverrides() {
+		if (!initFSViews()) return
+		console.log('WORKER: waiting for dir index from main thread...')
+		var waited = 0
 		while (Atomics.load(FS_META, 4) === 0) {
 			Atomics.wait(FS_META, 4, 0, 100)
+			waited++
+			if (waited > 600) {
+				console.error('WORKER: timeout waiting for dir index')
+				return
+			}
 		}
-		const dirDataLen = FS_META[5]
-		const dirStr = new TextDecoder().decode(FS_DATA.slice(0, dirDataLen))
-		console.log('WORKER prerun: got ' + dirDataLen + ' bytes of dirs, creating...')
+		console.log('WORKER: dir index ready, creating directories...')
+		var dirDataLen = FS_META[5]
+		var dirStr = new TextDecoder().decode(FS_DATA.slice(0, dirDataLen))
 		for (const dir of dirStr.split('\n')) {
 			if (dir) try { FS.mkdirTree(dir) } catch (e) {}
 		}
-		console.log('WORKER prerun: dirs created, installing FS overrides')
+		console.log('WORKER: directories created, installing FS overrides')
 
-		// Pre-load critical files so the engine finds them immediately
-		var criticalFiles = ['/portal/gameinfo.txt', '/portal/fonts/GameFont.ttf', '/portal/portal.shader']
-
-		var data = syncReadFile(criticalFiles[0])
-		if (data) {
-			FS.writeFile(criticalFiles[0], new Uint8Array(data))
-		}
-
+		// Modify the startWorker to install FS overrides after the runtime is ready
 		const _origOpen = FS.open
 		FS.open = function (path, rawFlags) {
 			if (_populating) return _origOpen(path, rawFlags)
@@ -151,7 +141,6 @@ if (ENV_IS_WORKER) {
 					console.log('WORKER FS.open: lazy-loaded ' + resolved)
 					return _origOpen(path, flags)
 				}
-				console.log('WORKER FS.open: lazy-load FAILED for ' + resolved)
 				throw e
 			}
 		}
@@ -163,12 +152,9 @@ if (ENV_IS_WORKER) {
 			} catch (e) {
 				if (!isENOENT(e)) throw e
 				const resolved = PATH.resolve(FS.cwd(), path)
-				console.log('WORKER FS.stat ENOENT: path=' + path + ' resolved=' + resolved)
 				if (lazyLoadFile(resolved)) {
-					console.log('WORKER FS.stat: lazy-loaded ' + resolved)
 					return _origStat(path, dontFollow)
 				}
-				console.log('WORKER FS.stat: lazy-load FAILED for ' + resolved)
 				throw e
 			}
 		}
@@ -180,12 +166,9 @@ if (ENV_IS_WORKER) {
 			} catch (e) {
 				if (!isENOENT(e)) throw e
 				const resolved = PATH.resolve(FS.cwd(), path)
-				console.log('WORKER FS.lookupPath ENOENT: path=' + path + ' resolved=' + resolved)
 				if (lazyLoadFile(resolved)) {
-					console.log('WORKER FS.lookupPath: lazy-loaded ' + resolved)
 					return _origLookupPath(path, opts)
 				}
-				console.log('WORKER FS.lookupPath: lazy-load FAILED for ' + resolved)
 				throw e
 			}
 		}
@@ -206,7 +189,23 @@ if (ENV_IS_WORKER) {
 			}
 			return _origClose(stream)
 		}
-	})
+	}
+
+	// Intercept self.startWorker so our FS overrides run before the worker signals readiness
+	if (typeof Object.defineProperty !== 'undefined' && typeof self !== 'undefined') {
+		var _wrappedStartWorker = null
+		Object.defineProperty(self, 'startWorker', {
+			configurable: true,
+			enumerable: true,
+			get: function () { return _wrappedStartWorker },
+			set: function (fn) {
+				_wrappedStartWorker = function (instance) {
+					installWorkerFSOverrides()
+					fn.call(self, instance)
+				}
+			}
+		})
+	}
 
 	Module.downloadMap = (lock, mapName) => {
 		Atomics.store(HEAP32, lock, 0)
@@ -241,17 +240,14 @@ if (ENV_IS_WORKER) {
 		const type = _meta[0]
 		const pathLen = _meta[1]
 		const path = new TextDecoder().decode(new Uint8Array(_data.buffer, 0, pathLen))
-		console.log('MAIN fsRequest: type=' + type + ' path=' + path + ' pathLen=' + pathLen)
 
 		if (type === 0) {
 			const data = await Module._readFileFromFolder(path)
 			if (data) {
-				console.log('MAIN fsRequest: readFile OK len=' + data.length)
 				_data.set(data, 0)
 				_meta[2] = data.length
 				_meta[3] = 0
 			} else {
-				console.log('MAIN fsRequest: readFile NOT FOUND')
 				_meta[2] = 0
 				_meta[3] = 1
 			}
@@ -263,7 +259,6 @@ if (ENV_IS_WORKER) {
 			_meta[3] = 0
 		} else if (type === 2) {
 			const exists = Module._pathExistsInFolder(path)
-			console.log('MAIN fsRequest: existsCheck path=' + path + ' result=' + exists)
 			_meta[3] = exists ? 0 : 1
 		}
 
@@ -273,23 +268,15 @@ if (ENV_IS_WORKER) {
 
 	Module._pathExistsInFolder = function (path) {
 		const clean = path.replace(/^\/+/, '').toLowerCase()
-		const exists = Module._dirIndex && Module._dirIndex.has(clean)
-		console.log('MAIN _pathExistsInFolder: raw=' + path + ' clean=' + clean + ' exists=' + exists)
-		return exists
+		return Module._dirIndex && Module._dirIndex.has(clean)
 	}
 
 	Module._readFileFromFolder = async function (path) {
 		const clean = path.replace(/^\/+/, '').toLowerCase()
 		const handle = Module._dirIndex && Module._dirIndex.get(clean)
-		if (!handle) {
-			console.log('MAIN _readFileFromFolder: NOT FOUND clean=' + clean + ' dirIndex.size=' + (Module._dirIndex ? Module._dirIndex.size : 'null'))
-			return null
-		}
-		console.log('MAIN _readFileFromFolder: FOUND clean=' + clean)
+		if (!handle) return null
 		const file = await handle.getFile()
-		const data = new Uint8Array(await file.arrayBuffer())
-		console.log('MAIN _readFileFromFolder: read ' + data.length + ' bytes')
-		return data
+		return new Uint8Array(await file.arrayBuffer())
 	}
 
 	Module._writeFileToFolder = async function (path, data) {
@@ -339,5 +326,48 @@ if (ENV_IS_WORKER) {
 		_meta[5] = encoded.length
 		console.log('MAIN _sendFolderIndexToWorker: sent ' + dirs.length + ' dirs, ' + encoded.length + ' bytes')
 		Atomics.notify(_meta, 4)
+	}
+
+	// Pre-load critical files into MEMFS before the engine starts.
+	// This is called from the shell.html click handler before callMain().
+	Module._preloadCriticalFiles = async function () {
+		var criticalFiles = ['/portal/gameinfo.txt', '/portal/fonts/GameFont.ttf', '/portal/portal.shader']
+		for (const vfsPath of criticalFiles) {
+			var data = await Module._readFileFromFolder(vfsPath)
+			if (data) {
+				var parts = vfsPath.split('/')
+				parts.pop()
+				if (parts.length) {
+					try { FS.mkdirTree(parts.join('/')) } catch (e) {}
+				}
+				FS.writeFile(vfsPath, new Uint8Array(data))
+				console.log('MAIN preloaded: ' + vfsPath)
+			} else {
+				console.warn('MAIN critical file not found: ' + vfsPath)
+			}
+		}
+		// Also install FS overrides on the main thread for any on-demand file loading
+		var _populating = false
+		function isENOENT(e) { return Math.abs(e.errno) === 2 || Math.abs(e.errno) === 44 }
+
+		var _origOpen = FS.open
+		FS.open = function (path, rawFlags) {
+			if (_populating) return _origOpen(path, rawFlags)
+			var flags = typeof rawFlags === 'string' ? FS.modeStringToFlags(rawFlags) : rawFlags
+			try {
+				return _origOpen(path, flags)
+			} catch (e) {
+				if (!isENOENT(e)) throw e
+				if (flags & 64) throw e
+				var resolved = PATH.resolve(FS.cwd(), path)
+				// Check if file exists in the user's folder (synchronous lookup)
+				var clean = resolved.replace(/^\/+/, '').toLowerCase()
+				if (Module._dirIndex && Module._dirIndex.has(clean)) {
+					// We can't read it synchronously, but log the miss so we can improve
+					console.log('MAIN FS.open: file exists in folder but not in MEMFS: ' + resolved)
+				}
+				throw e
+			}
+		}
 	}
 }
