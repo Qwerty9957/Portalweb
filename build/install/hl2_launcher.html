@@ -227,13 +227,70 @@ canvas.emscripten { border: 0px none; background-color: black; }
       canvasElement.widthNative = screen.availWidth;
       canvasElement.heightNative = screen.availHeight;
 
+      // ====== Folder selection persistence (IndexedDB) ======
+      const DB_NAME = 'portalweb-folder';
+      const DB_VERSION = 1;
+      const STORE_NAME = 'handles';
+
+      function openDB() {
+        return new Promise((resolve, reject) => {
+          var req = indexedDB.open(DB_NAME, DB_VERSION);
+          req.onupgradeneeded = function(e) {
+            e.target.result.createObjectStore(STORE_NAME);
+          };
+          req.onsuccess = function(e) { resolve(e.target.result); };
+          req.onerror = function(e) { reject(e.target.error); };
+        });
+      }
+
+      async function saveHandle(handle) {
+        var db = await openDB();
+        var tx = db.transaction(STORE_NAME, 'readwrite');
+        tx.objectStore(STORE_NAME).put(handle, 'folderHandle');
+        await new Promise(function(resolve) { tx.oncomplete = resolve; });
+        db.close();
+      }
+
+      async function loadHandle() {
+        try {
+          var db = await openDB();
+          var tx = db.transaction(STORE_NAME, 'readonly');
+          var store = tx.objectStore(STORE_NAME);
+          var req = store.get('folderHandle');
+          var handle = await new Promise(function(resolve, reject) {
+            req.onsuccess = function() { resolve(req.result); };
+            req.onerror = function() { reject(req.error); };
+          });
+          db.close();
+          return handle || null;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      // Try to restore saved folder on page load
+      var continueBtn = null;
+      (async function() {
+        var savedHandle = await loadHandle();
+        if (savedHandle) {
+          var opts = { mode: 'readwrite' };
+          var perm = await savedHandle.queryPermission(opts);
+          if (perm === 'granted') {
+            continueBtn = document.createElement('button');
+            continueBtn.id = 'continue-folder-btn';
+            continueBtn.textContent = 'Continue with ' + savedHandle.name;
+            continueBtn.style.cssText = 'padding:14px 36px;font-size:18px;background:#444;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:bold;margin-top:12px';
+            selectBtn.parentNode.insertBefore(continueBtn, selectBtn.nextSibling);
+          }
+        }
+      })();
+
       // ====== Folder selection ======
-      selectBtn.addEventListener('click', async () => {
+      async function handleFolderSelected(rootDirHandle) {
         try {
           selectBtn.disabled = true;
+          if (continueBtn) continueBtn.disabled = true;
           selectBtn.textContent = 'Reading folder...';
-
-          const rootDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
 
           selectedPathEl.textContent = 'Indexing ' + rootDirHandle.name + '...';
 
@@ -255,6 +312,9 @@ canvas.emscripten { border: 0px none; background-color: black; }
 
           selectedPathEl.textContent = rootDirHandle.name + ' (' + dirIndex.size + ' files indexed in ' + elapsed + 's)';
 
+          // Persist the handle for future visits
+          await saveHandle(rootDirHandle);
+
           // Share folder access with pre.js main-thread code
           Module._rootHandle = rootDirHandle;
           Module._dirIndex = dirIndex;
@@ -264,7 +324,7 @@ canvas.emscripten { border: 0px none; background-color: black; }
             Module._sendFolderIndexToWorker();
           }
 
-          // Pre-load critical files (gameinfo.txt etc.) into MEMFS before starting the engine
+          // Pre-load critical files into MEMFS before starting the engine
           await Module._preloadCriticalFiles();
 
           folderPicker.style.display = 'none';
@@ -285,9 +345,34 @@ canvas.emscripten { border: 0px none; background-color: black; }
             selectedPathEl.textContent = 'Error: ' + err.message;
           }
           selectBtn.disabled = false;
+          if (continueBtn) continueBtn.disabled = false;
+          selectBtn.textContent = 'Select Portal Folder';
+        }
+      }
+
+      selectBtn.addEventListener('click', async () => {
+        try {
+          const rootDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+          await handleFolderSelected(rootDirHandle);
+        } catch (err) {
+          if (err.name === 'SecurityError' || err.name === 'AbortError') {
+            selectedPathEl.textContent = 'Access denied or cancelled. Please try again.';
+          } else {
+            selectedPathEl.textContent = 'Error: ' + err.message;
+          }
+          selectBtn.disabled = false;
           selectBtn.textContent = 'Select Portal Folder';
         }
       });
+
+      if (continueBtn) {
+        continueBtn.addEventListener('click', async function() {
+          var savedHandle = await loadHandle();
+          if (savedHandle) {
+            await handleFolderSelected(savedHandle);
+          }
+        });
+      }
 
       // ====== Emscripten Module ======
       var Module = {

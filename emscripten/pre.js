@@ -350,6 +350,49 @@ if (ENV_IS_WORKER) {
 			'/hl2/hl2_misc_dir.vpk',
 			'/platform/platform_misc_dir.vpk'
 		]
+		// Scan for VPK data chunk files (*_NNN.vpk) that the engine needs
+		// to extract game assets. Portal's own chunks are always loaded;
+		// other VPK data is loaded up to a 300MB total limit.
+		if (Module._dirIndex) {
+			var vpkDataPattern = /_\d{3}\.vpk$/i
+			var portalChunks = []
+			var otherChunks = []
+			var portalSize = 0
+			var otherSize = 0
+			var maxOtherSize = 300 * 1024 * 1024
+			for (var entry of Module._dirIndex.entries()) {
+				var relPath = entry[0]
+				if (!vpkDataPattern.test(relPath)) continue
+				var s = 0
+				try { s = (await entry[1].getFile()).size } catch (e) { continue }
+				if (relPath.startsWith('portal/')) {
+					portalChunks.push(relPath)
+					portalSize += s
+				} else {
+					otherChunks.push(relPath)
+					otherSize += s
+				}
+			}
+			// Portal chunks always loaded
+			for (var p of portalChunks) { criticalFiles.push('/' + p) }
+			console.log('MAIN preload: ' + portalChunks.length + ' Portal VPK chunks (~' + (portalSize/1024/1024).toFixed(1) + 'MB)')
+			// Other VPK data chunks up to the limit
+			var loadedOther = 0
+			for (var o of otherChunks) {
+				try {
+					var sz = (await Module._dirIndex.get(o).getFile()).size
+					if (loadedOther + sz > maxOtherSize) {
+						console.warn('MAIN preload: skipping ' + o + ' (other VPK data exceeds 300MB limit)')
+						continue
+					}
+					loadedOther += sz
+					criticalFiles.push('/' + o)
+				} catch (e) { continue }
+			}
+			if (loadedOther > 0) {
+				console.log('MAIN preload: ' + otherChunks.length + ' other VPK chunks (~' + (loadedOther/1024/1024).toFixed(1) + 'MB loaded)')
+			}
+		}
 		for (const vfsPath of criticalFiles) {
 			var data = await Module._readFileFromFolder(vfsPath)
 			if (data) {
@@ -363,6 +406,18 @@ if (ENV_IS_WORKER) {
 			} else {
 				console.warn('MAIN critical file not found: ' + vfsPath)
 			}
+		}
+		// Guard against seek/read on NULL FILE* handles (avoids console noise when
+		// the engine tries to use a NULL handle from a failed fopen)
+		var _origSeek = FS.seek
+		FS.seek = function(stream, offset, whence) {
+			if (!stream) return -1
+			return _origSeek(stream, offset, whence)
+		}
+		var _origRead = FS.read
+		FS.read = function(stream, buffer, offset, length, position) {
+			if (!stream) return 0
+			return _origRead(stream, buffer, offset, length, position)
 		}
 		// Install FS overrides on the main thread for on-demand file loading.
 		// The filesystem module runs on the main thread (dlopen proxying), so
