@@ -163,6 +163,11 @@ canvas.emscripten { border: 0px none; background-color: black; }
       <h2>Portal: Web Port</h2>
       <p>Select your Portal game installation folder to play offline.
          The game will read and write files directly from your local folder.</p>
+      <div id="launch-params-wrapper" style="display:none;margin-bottom:12px;width:100%;max-width:400px">
+        <label style="display:block;margin-bottom:4px;color:#aaa;font-size:13px;text-align:left">Launch parameters (advanced):</label>
+        <input type="text" id="launch-params" style="width:100%;padding:8px;background:#222;color:#fff;border:1px solid #555;border-radius:4px;font-family:monospace;font-size:13px;box-sizing:border-box">
+      </div>
+      <button id="play-btn" style="display:none;padding:14px 36px;font-size:18px;background:#ff6600;color:#000;border:none;border-radius:6px;cursor:pointer;font-weight:bold;margin-bottom:12px">Play Portal</button>
       <button id="select-folder-btn">Select Portal Folder</button>
       <div id="selected-path"></div>
     </div>
@@ -268,29 +273,59 @@ canvas.emscripten { border: 0px none; background-color: black; }
         }
       }
 
-      // Try to restore saved folder on page load
-      var continueBtn = null;
+      async function saveLaunchParams(params) {
+        var db = await openDB();
+        var tx = db.transaction(STORE_NAME, 'readwrite');
+        tx.objectStore(STORE_NAME).put(params, 'launchParams');
+        await new Promise(function(resolve) { tx.oncomplete = resolve; });
+        db.close();
+      }
+
+      async function loadLaunchParams() {
+        try {
+          var db = await openDB();
+          var tx = db.transaction(STORE_NAME, 'readonly');
+          var store = tx.objectStore(STORE_NAME);
+          var req = store.get('launchParams');
+          var val = await new Promise(function(resolve, reject) {
+            req.onsuccess = function() { resolve(req.result); };
+            req.onerror = function() { reject(req.error); };
+          });
+          db.close();
+          return val || '';
+        } catch (e) {
+          return '';
+        }
+      }
+
+      var playBtn = document.getElementById('play-btn');
+      var launchParamsInput = document.getElementById('launch-params');
+      var launchParamsWrapper = document.getElementById('launch-params-wrapper');
+
+      // Try to restore saved folder and launch params on page load
       (async function() {
         var savedHandle = await loadHandle();
+        var savedParams = await loadLaunchParams();
+        if (savedParams) {
+          launchParamsWrapper.style.display = 'block';
+          launchParamsInput.value = savedParams;
+        }
         if (savedHandle) {
           var opts = { mode: 'readwrite' };
           var perm = await savedHandle.queryPermission(opts);
           if (perm === 'granted') {
-            continueBtn = document.createElement('button');
-            continueBtn.id = 'continue-folder-btn';
-            continueBtn.textContent = 'Continue with ' + savedHandle.name;
-            continueBtn.style.cssText = 'padding:14px 36px;font-size:18px;background:#444;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:bold;margin-top:12px';
-            selectBtn.parentNode.insertBefore(continueBtn, selectBtn.nextSibling);
+            playBtn.style.display = 'block';
+            launchParamsWrapper.style.display = 'block';
           }
         }
       })();
 
-      // ====== Folder selection ======
-      async function handleFolderSelected(rootDirHandle) {
+      // ====== Launch game with given params ======
+      async function launchGame(rootDirHandle, launchParams) {
         try {
+          playBtn.disabled = true;
           selectBtn.disabled = true;
-          if (continueBtn) continueBtn.disabled = true;
-          selectBtn.textContent = 'Reading folder...';
+          playBtn.textContent = 'Loading...';
 
           selectedPathEl.textContent = 'Indexing ' + rootDirHandle.name + '...';
 
@@ -312,8 +347,15 @@ canvas.emscripten { border: 0px none; background-color: black; }
 
           selectedPathEl.textContent = rootDirHandle.name + ' (' + dirIndex.size + ' files indexed in ' + elapsed + 's)';
 
-          // Persist the handle for future visits
+          // Persist the handle and launch params for future visits
           await saveHandle(rootDirHandle);
+          await saveLaunchParams(launchParams);
+          launchParamsWrapper.style.display = 'block';
+
+          // Set launch arguments on Module
+          if (launchParams) {
+            Module.arguments = launchParams.trim().split(/\s+/);
+          }
 
           // Share folder access with pre.js main-thread code
           Module._rootHandle = rootDirHandle;
@@ -344,16 +386,27 @@ canvas.emscripten { border: 0px none; background-color: black; }
           } else {
             selectedPathEl.textContent = 'Error: ' + err.message;
           }
+          playBtn.disabled = false;
           selectBtn.disabled = false;
-          if (continueBtn) continueBtn.disabled = false;
+          playBtn.textContent = 'Play Portal';
           selectBtn.textContent = 'Select Portal Folder';
         }
       }
 
+      // ====== Play button (uses saved folder) ======
+      playBtn.addEventListener('click', async function() {
+        var savedHandle = await loadHandle();
+        if (!savedHandle) return;
+        var params = launchParamsInput.value;
+        await launchGame(savedHandle, params);
+      });
+
+      // ====== Select folder button ======
       selectBtn.addEventListener('click', async () => {
         try {
           const rootDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-          await handleFolderSelected(rootDirHandle);
+          var params = launchParamsInput.value;
+          await launchGame(rootDirHandle, params);
         } catch (err) {
           if (err.name === 'SecurityError' || err.name === 'AbortError') {
             selectedPathEl.textContent = 'Access denied or cancelled. Please try again.';
@@ -364,15 +417,6 @@ canvas.emscripten { border: 0px none; background-color: black; }
           selectBtn.textContent = 'Select Portal Folder';
         }
       });
-
-      if (continueBtn) {
-        continueBtn.addEventListener('click', async function() {
-          var savedHandle = await loadHandle();
-          if (savedHandle) {
-            await handleFolderSelected(savedHandle);
-          }
-        });
-      }
 
       // ====== Emscripten Module ======
       var Module = {
