@@ -268,7 +268,7 @@ static int GetOpenGLVersionPatch()
 static bool CheckBaseOpenGLVersion()
 {
 	const int NEED_MAJOR = 3;
-	const int NEED_MINOR = 2;
+	const int NEED_MINOR = 0;
 	const int NEED_PATCH = 0;
 
 	int major, minor, patch;
