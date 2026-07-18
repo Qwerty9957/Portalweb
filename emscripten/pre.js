@@ -524,6 +524,12 @@ if (ENV_IS_WORKER) {
 		Atomics.notify(_meta, 4)
 	}
 
+	// ===== VPK Cache: pre-load VPK data chunk contents into the JS heap
+	// (shared via the WASM heap) during async setup. FS.read for VPK
+	// streams reads from this cache instead of MEMFS.
+	var _vpkCache = new Map()
+	var _vpkDataPattern = /_\d{3}\.vpk$/i
+
 	// Pre-load critical files into MEMFS before the engine starts.
 	// This is called from the shell.html click handler before callMain().
 	Module._preloadCriticalFiles = async function () {
@@ -539,18 +545,6 @@ if (ENV_IS_WORKER) {
 			'/hl2/hl2_misc_dir.vpk',
 			'/platform/platform_misc_dir.vpk'
 		]
-		// VPK data chunk files (*_NNN.vpk) are NOT preloaded into MEMFS.
-		// Instead, they are streamed on demand via the worker's lazy VPK FS,
-		// which fetches only the requested byte ranges from OPFS using the
-		// SAB bridge (syncReadFileRange). This avoids OOM on large VPKs.
-		if (Module._dirIndex) {
-			var vpkDataPattern = /_\d{3}\.vpk$/i
-			var vpkCount = 0
-			for (var entry of Module._dirIndex.entries()) {
-				if (vpkDataPattern.test(entry[0])) vpkCount++
-			}
-			console.log('MAIN preload: ' + vpkCount + ' VPK data chunks will be streamed on demand')
-		}
 		for (const vfsPath of criticalFiles) {
 			var data = await Module._readFileFromFolder(vfsPath)
 			if (data) {
@@ -565,63 +559,157 @@ if (ENV_IS_WORKER) {
 				console.warn('MAIN critical file not found: ' + vfsPath)
 			}
 		}
-		// Guard against seek/read on NULL FILE* handles (avoids console noise when
-		// the engine tries to use a NULL handle from a failed fopen)
+
+		// ===== VPK data chunk cache =====
+		// Pre-load VPK data chunks into the JS heap.  All C-level FS operations
+		// are proxied to the main thread (via proxyToMainThread), so the worker's
+		// VPK FS overrides don't intercept them.  Instead, we handle VPK streams
+		// directly on the main thread: FS.open creates 1-byte stubs, FS.seek
+		// tracks the correct position (node.size is set to the real VPK size),
+		// and FS.read copies data from this pre-loaded cache.
+		var VPK_CACHE_BUDGET = 400 * 1024 * 1024 // 400MB limit
+		var usedBudget = 0
+		var vpkEntries = []
+
+		if (Module._dirIndex) {
+			for (var entry of Module._dirIndex.entries()) {
+				if (_vpkDataPattern.test(entry[0])) {
+					var file = await entry[1].getFile()
+					vpkEntries.push({ clean: entry[0], size: file.size, handle: entry[1] })
+				}
+			}
+		}
+
+		// Sort smallest first — portal_pak_001 and small VPKs fill the budget first
+		vpkEntries.sort(function (a, b) { return a.size - b.size })
+
+		console.log('MAIN preload: ' + vpkEntries.length + ' VPK data chunks, budget ' +
+			(VPK_CACHE_BUDGET / 1024 / 1024).toFixed(0) + ' MB')
+
+		for (var chunk of vpkEntries) {
+			if (usedBudget + chunk.size > VPK_CACHE_BUDGET) {
+				console.log('MAIN VPK cache: SKIP ' + chunk.clean + ' (' +
+					(chunk.size / 1024 / 1024).toFixed(1) + ' MB) — would exceed budget')
+				continue
+			}
+			var data = new Uint8Array(await chunk.handle.getFile().then(function (f) { return f.arrayBuffer() }))
+			_vpkCache.set(chunk.clean, data)
+			usedBudget += data.length
+			console.log('MAIN VPK cache: ' + chunk.clean + ' (' +
+				(data.length / 1024 / 1024).toFixed(1) + ' MB)')
+		}
+		console.log('MAIN VPK cache: total ' + (usedBudget / 1024 / 1024).toFixed(1) + ' MB cached')
+
+		// ===== FS overrides for VPK streaming =====
 		var _origSeek = FS.seek
-		FS.seek = function(stream, offset, whence) {
+		FS.seek = function (stream, offset, whence) {
 			if (!stream) return -1
 			return _origSeek(stream, offset, whence)
 		}
+
+		// FS.read — serve VPK data from the pre-loaded cache
 		var _origRead = FS.read
-		FS.read = function(stream, buffer, offset, length, position) {
+		FS.read = function (stream, buffer, offset, length, position) {
 			if (!stream) return 0
+			if (stream._vpkPath) {
+				var path = stream._vpkPath
+				var cached = _vpkCache.get(path)
+				if (cached) {
+					var pos = (position >= 0) ? position : stream.position
+					if (pos >= cached.length) return 0
+					var toRead = Math.min(length, cached.length - pos)
+					buffer.set(cached.subarray(pos, pos + toRead), offset)
+					if (position < 0) stream.position += toRead
+					return toRead
+				}
+				return _origRead(stream, buffer, offset, length, position)
+			}
 			return _origRead(stream, buffer, offset, length, position)
 		}
-		// Install FS overrides on the main thread for on-demand file loading.
-		// The filesystem module runs on the main thread (dlopen proxying), so
-		// we need to trigger async loads when files are found in OPFS but not MEMFS.
-		// The C code retries some files, and subsequent opens will find them in MEMFS.
-		var _populating = false
-		var _pendingAsyncLoads = new Set()
-		function isENOENT(e) { return Math.abs(e.errno) === 2 || Math.abs(e.errno) === 44 }
 
-		function _triggerAsyncLoad(resolved, clean) {
-			if (_pendingAsyncLoads.has(resolved)) return
-			_pendingAsyncLoads.add(resolved)
-			setTimeout(async function() {
-				try {
-					var data = await Module._readFileFromFolder('/' + clean)
-					if (data) {
-						var parts = resolved.split('/')
-						parts.pop()
-						if (parts.length) {
-							try { FS.mkdirTree(parts.join('/')) } catch (e) {}
-						}
-						FS.writeFile(resolved, new Uint8Array(data))
-						console.log('MAIN async loaded: ' + resolved)
-					}
-				} catch (e) {
-					console.warn('MAIN async load failed for ' + resolved, e)
-				}
-			}, 0)
-		}
-
+		// FS.open — create 1-byte stubs for VPK data chunks so fopen succeeds.
+		// node.size is set to the real file size so FS.llseek allows seeking
+		// to the correct offsets.
 		var _origOpen = FS.open
 		FS.open = function (path, rawFlags) {
-			if (_populating) return _origOpen(path, rawFlags)
 			var flags = typeof rawFlags === 'string' ? FS.modeStringToFlags(rawFlags) : rawFlags
 			try {
 				return _origOpen(path, flags)
 			} catch (e) {
-				if (!isENOENT(e)) throw e
+				if (Math.abs(e.errno) !== 2 && Math.abs(e.errno) !== 44) throw e
 				if (flags & 64) throw e
 				var resolved = PATH.isAbs(path) ? PATH.normalize(path) : PATH.join2(FS.cwd(), path)
 				var clean = resolved.replace(/^\/+/, '').toLowerCase()
-				// Skip VPK data chunks — they are streamed on demand by the worker's VPK lazy FS,
-				// and loading them entirely into MEMFS here would defeat the purpose.
-				if (Module._dirIndex && Module._dirIndex.has(clean) && !/_\d{3}\.vpk$/i.test(clean)) {
-					console.log('MAIN FS.open: async-loading: ' + resolved)
-					_triggerAsyncLoad(resolved, clean)
+				if (!Module._dirIndex || !Module._dirIndex.has(clean)) throw e
+
+				// Handle VPK data chunks — create a 1-byte stub so fopen returns a
+				// valid FILE*.  node.size is patched to the real VPK size so that
+				// FS.llseek (called from _fd_seek) allows seeking to large offsets.
+				if (_vpkDataPattern.test(clean)) {
+					var parts = resolved.split('/')
+					parts.pop()
+					if (parts.length) {
+						try { FS.mkdirTree(parts.join('/')) } catch (e2) {}
+					}
+					FS.writeFile(resolved, new Uint8Array(1))
+					var stream = _origOpen(path, flags)
+					var realSize = _vpkCache.has(clean)
+						? _vpkCache.get(clean).length
+						: 0
+					if (realSize > 1) stream.node.size = realSize
+					stream._vpkPath = clean
+					return stream
+				}
+
+				// Non-VPK file that exists in OPFS but not MEMFS — trigger async load
+				console.log('MAIN FS.open: async-loading: ' + resolved)
+				setTimeout(async function () {
+					try {
+						var data = await Module._readFileFromFolder('/' + clean)
+						if (data) {
+							var parts2 = resolved.split('/')
+							parts2.pop()
+							if (parts2.length) {
+								try { FS.mkdirTree(parts2.join('/')) } catch (e3) {}
+							}
+							FS.writeFile(resolved, new Uint8Array(data))
+							console.log('MAIN async loaded: ' + resolved)
+						}
+					} catch (e4) {
+						console.warn('MAIN async load failed for ' + resolved, e4)
+					}
+				}, 0)
+				throw e
+			}
+		}
+
+		// FS.stat — report real VPK size
+		var _origStat = FS.stat
+		FS.stat = function (path, dontFollow) {
+			try {
+				var result = _origStat(path, dontFollow)
+				var clean = path.replace(/^\/+/, '').toLowerCase()
+				if (_vpkCache.has(clean)) {
+					result.size = _vpkCache.get(clean).length
+				}
+				return result
+			} catch (e) {
+				if (Math.abs(e.errno) !== 2 && Math.abs(e.errno) !== 44) throw e
+				var resolved = PATH.isAbs(path) ? PATH.normalize(path) : PATH.join2(FS.cwd(), path)
+				var clean = resolved.replace(/^\/+/, '').toLowerCase()
+				if (_vpkDataPattern.test(clean) && Module._dirIndex && Module._dirIndex.has(clean)) {
+					var parts = resolved.split('/')
+					parts.pop()
+					if (parts.length) {
+						try { FS.mkdirTree(parts.join('/')) } catch (e2) {}
+					}
+					FS.writeFile(resolved, new Uint8Array(1))
+					var cached = _vpkCache.get(clean)
+					if (cached) {
+						var node = FS.lookupPath(resolved).node
+						node.size = cached.length
+					}
+					return _origStat(path, dontFollow)
 				}
 				throw e
 			}
