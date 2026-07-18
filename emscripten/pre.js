@@ -242,18 +242,13 @@ if (ENV_IS_WORKER) {
 
 		var _prevOpen = FS.open
 		FS.open = function (path, rawFlags) {
-			var prevError
-			try {
-				return _prevOpen(path, rawFlags)
-			} catch (e) {
-				if (!isENOENT(e)) throw e
-				if (rawFlags & 64) throw e
-				prevError = e
-			}
 			var resolved = PATH.isAbs(path) ? PATH.normalize(path) : PATH.join2(FS.cwd(), path)
 			var clean = resolved.replace(/^\/+/, '').toLowerCase()
+
+			// Check for VPK data chunk BEFORE delegating to the lazy-load override,
+			// so we can create a 1-byte stub and avoid loading the entire file.
 			if (_vpkPattern.test(clean)) {
-				var size = syncGetFileSize(resolved)
+				var size = _vpkSizes.has(clean) ? _vpkSizes.get(clean) : syncGetFileSize(resolved)
 				if (size > 0) {
 					var parts = resolved.split('/')
 					parts.pop()
@@ -270,8 +265,17 @@ if (ENV_IS_WORKER) {
 						return stream
 					} catch (e2) { throw e2 }
 				}
+				throw new FS.ErrnoError(2) // ENOENT
 			}
-			throw prevError
+
+			// Non-VPK file: delegate to the existing lazy-load override
+			try {
+				return _prevOpen(path, rawFlags)
+			} catch (e) {
+				if (!isENOENT(e)) throw e
+				if (rawFlags & 64) throw e
+				throw e
+			}
 		}
 
 		var _prevSeek = FS.seek
@@ -613,7 +617,9 @@ if (ENV_IS_WORKER) {
 				if (flags & 64) throw e
 				var resolved = PATH.isAbs(path) ? PATH.normalize(path) : PATH.join2(FS.cwd(), path)
 				var clean = resolved.replace(/^\/+/, '').toLowerCase()
-				if (Module._dirIndex && Module._dirIndex.has(clean)) {
+				// Skip VPK data chunks — they are streamed on demand by the worker's VPK lazy FS,
+				// and loading them entirely into MEMFS here would defeat the purpose.
+				if (Module._dirIndex && Module._dirIndex.has(clean) && !/_\d{3}\.vpk$/i.test(clean)) {
 					console.log('MAIN FS.open: async-loading: ' + resolved)
 					_triggerAsyncLoad(resolved, clean)
 				}

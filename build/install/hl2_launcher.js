@@ -290,36 +290,37 @@ if (ENV_IS_WORKER) {
 
 		var _prevOpen = FS.open
 		FS.open = function (path, rawFlags) {
-			var prevError
-			try {
-				return _prevOpen(path, rawFlags)
-			} catch (e) {
-				if (!isENOENT(e)) throw e
-				if (rawFlags & 64) throw e
-				prevError = e
-			}
 			var resolved = PATH.isAbs(path) ? PATH.normalize(path) : PATH.join2(FS.cwd(), path)
 			var clean = resolved.replace(/^\/+/, '').toLowerCase()
+
 			if (_vpkPattern.test(clean)) {
-				var size = syncGetFileSize(resolved)
+				var size = _vpkSizes.has(clean) ? _vpkSizes.get(clean) : syncGetFileSize(resolved)
 				if (size > 0) {
 					var parts = resolved.split('/')
 					parts.pop()
 					if (parts.length) {
 						try { FS.mkdirTree(parts.join('/')) } catch (e) {}
 					}
-				_vpkSizes.set(clean, size)
-				FS.writeFile(resolved, new Uint8Array(1))
-				try {
-					var stream = _prevOpen(path, rawFlags)
-					stream._vpkSize = size
-					stream._vpkPath = clean
-					_vpkFds.add(stream.fd)
-					return stream
-				} catch (e2) { throw e2 }
+					_vpkSizes.set(clean, size)
+					FS.writeFile(resolved, new Uint8Array(1))
+					try {
+						var stream = _prevOpen(path, rawFlags)
+						stream._vpkSize = size
+						stream._vpkPath = clean
+						_vpkFds.add(stream.fd)
+						return stream
+					} catch (e2) { throw e2 }
+				}
+				throw new FS.ErrnoError(2)
 			}
-		}
-		throw prevError
+
+			try {
+				return _prevOpen(path, rawFlags)
+			} catch (e) {
+				if (!isENOENT(e)) throw e
+				if (rawFlags & 64) throw e
+				throw e
+			}
 		}
 
 		var _prevSeek = FS.seek
@@ -661,7 +662,9 @@ if (ENV_IS_WORKER) {
 				if (flags & 64) throw e
 				var resolved = PATH.isAbs(path) ? PATH.normalize(path) : PATH.join2(FS.cwd(), path)
 				var clean = resolved.replace(/^\/+/, '').toLowerCase()
-				if (Module._dirIndex && Module._dirIndex.has(clean)) {
+				// Skip VPK data chunks — they are streamed on demand by the worker's VPK lazy FS,
+				// and loading them entirely into MEMFS here would defeat the purpose.
+				if (Module._dirIndex && Module._dirIndex.has(clean) && !/_\d{3}\.vpk$/i.test(clean)) {
 					console.log('MAIN FS.open: async-loading: ' + resolved)
 					_triggerAsyncLoad(resolved, clean)
 				}
